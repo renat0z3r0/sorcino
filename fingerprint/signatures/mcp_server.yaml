@@ -1,0 +1,27 @@
+name: MCP Server
+description: "Model Context Protocol Server"
+confidence_base: 0
+
+endpoints:
+  - path: "/mcp"
+    method: "GET"
+    weight: 40
+
+  - path: "/sse"
+    method: "GET"
+    weight: 30
+    response_patterns:
+      - pattern: "text/event-stream"
+        weight: 20
+
+headers:
+  - name: "x-mcp-version"
+    weight: 50
+
+body_patterns:
+  - pattern: '"jsonrpc":\s*"2.0"'
+    weight: 25
+  - pattern: '"method":\s*"tools/'
+    weight: 30
+
+threshold: 45

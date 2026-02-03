@@ -1,0 +1,131 @@
+name: OpenClaw
+description: "OpenClaw Personal AI Assistant Gateway (formerly Clawdbot/Moltbot)"
+reference: "https://github.com/openclaw/openclaw"
+confidence_base: 0
+
+headers:
+  - name: "x-openclaw-version"
+    weight: 60
+  - name: "x-openclaw-gateway"
+    weight: 50
+  - name: "x-clawdbot-version"
+    weight: 50
+  - name: "x-moltbot-version"
+    weight: 50
+
+endpoints:
+  - path: "/"
+    method: "GET"
+    weight: 5
+    headers_check:
+      - header: "Upgrade"
+        value: "websocket"
+        weight: 15
+    response_patterns:
+      - pattern: "openclaw"
+        weight: 40
+        case_insensitive: true
+      - pattern: "clawdbot"
+        weight: 35
+        case_insensitive: true
+
+  - path: "/health"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: '"status":\s*"ok"'
+        weight: 10
+      - pattern: '"uptime"'
+        weight: 10
+      - pattern: '"gatewayPort":\s*18789'
+        weight: 40
+
+  - path: "/webchat"
+    method: "GET"
+    weight: 20
+    response_patterns:
+      - pattern: "OpenClaw"
+        weight: 30
+        case_insensitive: true
+      - pattern: "ws://127.0.0.1:18789"
+        weight: 45
+      - pattern: "ws://localhost:18789"
+        weight: 45
+
+  - path: "/dashboard"
+    method: "GET"
+    weight: 15
+    response_patterns:
+      - pattern: "gateway"
+        weight: 10
+      - pattern: "sessions"
+        weight: 10
+
+  - path: "/api/config"
+    method: "GET"
+    weight: 15
+    response_patterns:
+      - pattern: '"gateway"'
+        weight: 20
+      - pattern: '"channels"'
+        weight: 20
+      - pattern: '"whatsapp"'
+        weight: 25
+      - pattern: '"telegram"'
+        weight: 25
+      - pattern: '"allowInsecureAuth"'
+        weight: 40
+
+ports:
+  - port: 18789
+    weight: 35
+    description: "Gateway WebSocket + HTTP"
+  - port: 18791
+    weight: 25
+    description: "CDP browser control"
+  - port: 18793
+    weight: 25
+    description: "Canvas file server"
+
+mdns:
+  service_type: "_openclaw-gw._tcp"
+  weight: 60
+  txt_records:
+    - key: "gatewayPort"
+      weight: 20
+    - key: "cliPath"
+      weight: 15
+    - key: "sshPort"
+      weight: 15
+
+body_patterns:
+  - pattern: "OpenClaw"
+    weight: 40
+    case_insensitive: true
+  - pattern: "Moltbot"
+    weight: 35
+    case_insensitive: true
+  - pattern: "Clawdbot"
+    weight: 35
+    case_insensitive: true
+  - pattern: "bot.molt"
+    weight: 30
+  - pattern: "ws://127.0.0.1:18789"
+    weight: 50
+  - pattern: "OPENCLAW_GATEWAY"
+    weight: 45
+  - pattern: "gateway token missing"
+    weight: 55
+  - pattern: "unauthorized.*gateway"
+    weight: 40
+    case_insensitive: true
+
+websocket_patterns:
+  - close_code: 1008
+    close_reason_contains: "unauthorized"
+    weight: 40
+  - close_code: 1008
+    close_reason_contains: "gateway token"
+    weight: 50
+
+threshold: 50

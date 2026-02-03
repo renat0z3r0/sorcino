@@ -1,0 +1,28 @@
+name: Ollama
+description: "Ollama Local LLM Server"
+confidence_base: 0
+
+endpoints:
+  - path: "/api/tags"
+    method: "GET"
+    weight: 50
+    response_patterns:
+      - pattern: '"models":\s*\['
+        weight: 20
+
+  - path: "/api/generate"
+    method: "POST"
+    weight: 30
+
+  - path: "/"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: "Ollama is running"
+        weight: 60
+
+ports:
+  - port: 11434
+    weight: 30
+
+threshold: 50

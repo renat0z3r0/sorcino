@@ -1,0 +1,34 @@
+name: LiteLLM
+description: "LiteLLM Proxy Server"
+confidence_base: 0
+
+headers:
+  - name: "x-litellm-version"
+    weight: 60
+
+endpoints:
+  - path: "/health"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: "litellm"
+        weight: 40
+        case_insensitive: true
+
+  - path: "/model/info"
+    method: "GET"
+    weight: 30
+
+  - path: "/key/info"
+    method: "GET"
+    weight: 25
+
+ports:
+  - port: 4000
+    weight: 15
+
+body_patterns:
+  - pattern: "LiteLLM"
+    weight: 35
+
+threshold: 40
