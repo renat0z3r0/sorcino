@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from checks.models import Severity, VulnFinding
+from checks.secret_patterns import API_KEY_PATTERNS
+from utils.http import read_capped
 
 if TYPE_CHECKING:
     from checks.evidence import EvidenceCollector
@@ -17,8 +19,10 @@ DISCLOSURE_PATTERNS = [
     (r"stack.*at\s+\w+\s+\(", "Stack trace exposed", Severity.LOW),
     (r"ANTHROPIC_API_KEY", "Anthropic API key reference", Severity.HIGH),
     (r"OPENAI_API_KEY", "OpenAI API key reference", Severity.HIGH),
-    (r"sk-[a-zA-Z0-9]{20,}", "Potential API key in response", Severity.CRITICAL),
-    (r"sk-ant-[a-zA-Z0-9-]{20,}", "Anthropic API key pattern", Severity.CRITICAL),
+    # Reuse the shared, specific key patterns instead of the old broad
+    # `sk-[a-zA-Z0-9]{20,}` that flagged any random sk-prefixed token.
+    (API_KEY_PATTERNS["anthropic"], "Anthropic API key pattern", Severity.CRITICAL),
+    (API_KEY_PATTERNS["openai"], "OpenAI API key pattern", Severity.CRITICAL),
     (r'"password"\s*:\s*"[^"]+"', "Password in response", Severity.CRITICAL),
     (r'"secret"\s*:\s*"[^"]+"', "Secret in response", Severity.HIGH),
     (r"version.*\d+\.\d+\.\d+", "Version disclosure", Severity.INFO),
@@ -92,7 +96,7 @@ async def check_info_disclosure(
                 if resp.status != 200:
                     continue
 
-                body = await resp.text()
+                body = await read_capped(resp)
                 ct = resp.headers.get("Content-Type", "")
 
                 if len(body) <= 10 or "not found" in body.lower():

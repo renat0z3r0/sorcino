@@ -1,0 +1,26 @@
+name: vLLM
+description: "vLLM OpenAI-compatible inference server"
+reference: "https://docs.vllm.ai/en/stable/design/metrics/"
+confidence_base: 0
+
+# /metrics and /v1/models are already in DEFAULT_PATHS, so this costs no extra
+# requests. The vllm: gauges are unique and decisive; /v1/models alone is not
+# (shared by every OpenAI-compatible server) to avoid misfiring on TGI/llama.cpp.
+ports:
+  - port: 8000
+    weight: 15
+
+endpoints:
+  - path: "/metrics"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: "vllm:num_requests_running"
+        weight: 50
+      - pattern: "vllm:(gpu|kv)_cache_usage_perc"
+        weight: 40
+  - path: "/v1/models"
+    method: "GET"
+    weight: 10
+
+threshold: 40

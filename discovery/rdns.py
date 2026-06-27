@@ -6,7 +6,7 @@ import socket
 
 async def reverse_dns(ip: str) -> str | None:
     """Resolve PTR record for an IP. Returns hostname or None."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         result = await asyncio.wait_for(
             loop.run_in_executor(None, socket.gethostbyaddr, ip),

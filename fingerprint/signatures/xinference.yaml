@@ -1,0 +1,24 @@
+name: Xinference
+description: "Xorbits Inference (Xinference) model serving"
+reference: "https://github.com/xorbitsai/inference"
+confidence_base: 0
+
+ports:
+  - port: 9997
+    weight: 15
+
+endpoints:
+  - path: "/v1/cluster/auth"
+    method: "GET"
+    weight: 15
+    response_patterns:
+      - pattern: '"auth"\s*:\s*(true|false)'
+        weight: 45
+  - path: "/"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: "<title>Xinference</title>"
+        weight: 45
+
+threshold: 45

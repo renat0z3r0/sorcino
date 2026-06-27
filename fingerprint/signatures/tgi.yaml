@@ -1,0 +1,26 @@
+name: Text Generation Inference
+description: "HuggingFace Text Generation Inference (TGI)"
+reference: "https://huggingface.co/docs/text-generation-inference"
+confidence_base: 0
+
+ports:
+  - port: 3000
+    weight: 10
+  - port: 9000
+    weight: 10
+
+endpoints:
+  - path: "/info"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: '"router"\s*:\s*"text-generation-router"'
+        weight: 50
+  - path: "/metrics"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: "tgi_request_count"
+        weight: 45
+
+threshold: 45

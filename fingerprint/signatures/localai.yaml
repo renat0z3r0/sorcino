@@ -1,0 +1,18 @@
+name: LocalAI
+description: "LocalAI (mudler/LocalAI) OpenAI-compatible server"
+reference: "https://localai.io/features/api-discovery/"
+confidence_base: 0
+
+ports:
+  - port: 8080
+    weight: 5
+
+endpoints:
+  - path: "/.well-known/localai.json"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: '"endpoint_groups"'
+        weight: 50
+
+threshold: 45

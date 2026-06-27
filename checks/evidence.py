@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 class EvidenceCollector:
@@ -16,7 +17,11 @@ class EvidenceCollector:
         self._items: list[dict] = []
 
     def save_file(self, path: str, content: str, source_url: str) -> None:
-        safe_name = path.lstrip("/").replace("/", "_") or "root"
+        # Prefix with host:port so the same path served on two ports of one
+        # host doesn't collide (last-writer-wins + an inconsistent manifest).
+        netloc = urlsplit(source_url).netloc.replace(":", "_")
+        base = path.lstrip("/").replace("/", "_") or "root"
+        safe_name = f"{netloc}_{base}" if netloc else base
         dest = self.dir / safe_name
         dest.write_text(content, encoding="utf-8")
         self._items.append({

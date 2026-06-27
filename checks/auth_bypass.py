@@ -1,95 +1,41 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 import aiohttp
-import websockets
 
 from checks.models import Severity, VulnFinding
+from checks.openclaw_profile import OpenClawProfile, load_profile
+from utils.http import read_capped
 
 if TYPE_CHECKING:
     from checks.evidence import EvidenceCollector
-
-
-OPENCLAW_ENDPOINTS = [
-    ("/", "WS", "Gateway WebSocket", Severity.CRITICAL),
-    ("/webchat", "GET", "WebChat UI", Severity.HIGH),
-    ("/dashboard", "GET", "Control Dashboard", Severity.HIGH),
-    ("/api/config", "GET", "Gateway Configuration", Severity.CRITICAL),
-    ("/api/sessions", "GET", "Sessions listing", Severity.HIGH),
-    ("/health", "GET", "Health endpoint", Severity.LOW),
-    ("/credentials", "GET", "Credentials directory", Severity.CRITICAL),
-    ("/debug", "GET", "Debug Endpoint", Severity.MEDIUM),
-    ("/metrics", "GET", "Prometheus Metrics", Severity.MEDIUM),
-]
-
-SENSITIVE_INDICATORS = (
-    '"channels"', '"whatsapp"', '"telegram"',
-    '"token"', '"apiKey"', "ANTHROPIC_API_KEY",
-    '"sessions"', '"credentials"',
-)
 
 
 async def check_auth_bypass(
     base_url: str,
     session: aiohttp.ClientSession,
     evidence: EvidenceCollector | None = None,
+    profile: OpenClawProfile | None = None,
 ) -> list[VulnFinding]:
+    profile = profile or load_profile()
     findings: list[VulnFinding] = []
 
-    for path, method, name, severity in OPENCLAW_ENDPOINTS:
-        url = f"{base_url}{path}"
+    # WebSocket auth is owned solely by check_websocket_auth (single owner, no
+    # duplicate probe). This check covers HTTP endpoints + trusted-proxy only.
 
+    # HTTP endpoints from the profile.
+    for ep in profile.http_endpoints:
+        if ep.method != "GET":
+            continue
         try:
-            if method == "WS":
-                findings.extend(await _check_ws(url, evidence))
-            elif method == "GET":
-                findings.extend(await _check_http(url, name, severity, session))
+            findings.extend(await _check_http(f"{base_url}{ep.path}", ep, profile, session))
         except Exception:
             continue
 
-    return findings
-
-
-async def _check_ws(
-    url: str,
-    evidence: EvidenceCollector | None = None,
-) -> list[VulnFinding]:
-    findings: list[VulnFinding] = []
-    ws_url = url.replace("http://", "ws://").replace("https://", "wss://")
-    rpc_msg = '{"jsonrpc":"2.0","method":"status","id":1}'
-
+    # Trusted-proxy header spoofing (data-driven; no-op unless headers configured).
     try:
-        async with websockets.connect(ws_url, close_timeout=5, open_timeout=5) as ws:
-            await ws.send(rpc_msg)
-            try:
-                response = await asyncio.wait_for(ws.recv(), timeout=3)
-
-                if evidence is not None:
-                    evidence.save_ws_response(ws_url, rpc_msg, response)
-
-                findings.append(VulnFinding(
-                    check_name="auth_bypass",
-                    severity=Severity.CRITICAL,
-                    title="OpenClaw Gateway WebSocket accessible without authentication",
-                    description="The Gateway WebSocket accepts connections without a token. This allows full control of the assistant.",
-                    evidence=f"WS connected, RPC response: {response[:200]}",
-                    remediation="Set gateway.auth.mode to 'token' or 'password' in openclaw.json",
-                    cvss_estimate=9.8,
-                ))
-            except asyncio.TimeoutError:
-                findings.append(VulnFinding(
-                    check_name="auth_bypass",
-                    severity=Severity.HIGH,
-                    title="OpenClaw Gateway WebSocket accepts unauthenticated connections",
-                    description="The Gateway WebSocket accepts connections without a token.",
-                    evidence="WS connection established without authentication",
-                    remediation="Set gateway.auth.mode to 'token' or 'password' in openclaw.json",
-                    cvss_estimate=8.5,
-                ))
-    except websockets.exceptions.InvalidStatusCode:
-        pass
+        findings.extend(await _check_trusted_proxy(base_url, profile, session))
     except Exception:
         pass
 
@@ -107,32 +53,95 @@ def _is_html_response(content_type: str, body: str) -> bool:
 
 async def _check_http(
     url: str,
-    name: str,
-    severity: Severity,
+    endpoint,
+    profile: OpenClawProfile,
     session: aiohttp.ClientSession,
 ) -> list[VulnFinding]:
     findings: list[VulnFinding] = []
 
     try:
         async with session.get(url) as resp:
+            if resp.status != 200:
+                return findings
+
+            content_type = resp.headers.get("Content-Type", "")
+            body = await read_capped(resp)
+
+            if _is_html_response(content_type, body):
+                return findings
+
+            has_scope = profile.has_operator_scope(body)
+            has_sensitive = has_scope or any(ind in body for ind in profile.sensitive_indicators)
+
+            # Privileged operator scopes without auth is the strongest signal.
+            if has_scope:
+                severity = Severity.CRITICAL
+            elif has_sensitive:
+                severity = endpoint.severity
+            else:
+                severity = Severity.MEDIUM
+
+            findings.append(VulnFinding(
+                check_name="auth_bypass",
+                severity=severity,
+                title=f"Unauthenticated access to {endpoint.name}",
+                description=f"The endpoint {url} is accessible without authentication.",
+                evidence=(
+                    f"HTTP {resp.status}, Content-Type: {content_type}, "
+                    f"operator_scope={has_scope}, sensitive={has_sensitive}, preview: {body[:150]}"
+                ),
+                remediation="Configure gateway authentication and restrict endpoint access.",
+                cvss_estimate=9.1 if severity == Severity.CRITICAL else 7.5,
+            ))
+    except aiohttp.ClientError:
+        pass
+
+    return findings
+
+
+async def _check_trusted_proxy(
+    base_url: str,
+    profile: OpenClawProfile,
+    session: aiohttp.ClientSession,
+) -> list[VulnFinding]:
+    """Probe for trusted-proxy identity-header spoofing.
+
+    Only runs when identity header names are configured in the profile — the
+    real header name is not publicly documented, so by default this is a no-op
+    rather than a speculative claim.
+    """
+    findings: list[VulnFinding] = []
+    if not profile.trusted_proxy_headers:
+        return findings
+
+    target = next((e for e in profile.http_endpoints if e.requires_auth and e.method == "GET"), None)
+    if target is None:
+        return findings
+
+    spoof_headers = {h: "admin" for h in profile.trusted_proxy_headers}
+    url = f"{base_url}{target.path}"
+    try:
+        async with session.get(url, headers=spoof_headers) as resp:
             if resp.status == 200:
-                content_type = resp.headers.get("Content-Type", "")
-                body = await resp.text()
-
-                if _is_html_response(content_type, body):
-                    return findings
-
-                has_sensitive = any(ind in body for ind in SENSITIVE_INDICATORS)
-
-                findings.append(VulnFinding(
-                    check_name="auth_bypass",
-                    severity=severity if has_sensitive else Severity.MEDIUM,
-                    title=f"Unauthenticated access to {name}",
-                    description=f"The endpoint {url} is accessible without authentication.",
-                    evidence=f"HTTP {resp.status}, Content-Type: {content_type}, sensitive_data={has_sensitive}, preview: {body[:150]}",
-                    remediation="Configure gateway authentication and restrict endpoint access.",
-                    cvss_estimate=9.1 if severity == Severity.CRITICAL else 7.5,
-                ))
+                body = await read_capped(resp)
+                if not _is_html_response(resp.headers.get("Content-Type", ""), body):
+                    findings.append(VulnFinding(
+                        check_name="auth_bypass",
+                        severity=Severity.MEDIUM,
+                        title="Possible trusted-proxy identity header spoofing",
+                        description=(
+                            f"Authenticated endpoint {target.path} returned 200 when supplied "
+                            f"forged identity headers ({', '.join(profile.trusted_proxy_headers)}). "
+                            "If the gateway runs in trusted-proxy mode without a real proxy in "
+                            "front, identity can be spoofed."
+                        ),
+                        evidence=f"HTTP 200 with spoofed headers, preview: {body[:120]}",
+                        remediation=(
+                            "Ensure trusted-proxy mode is only used behind an identity-aware "
+                            "reverse proxy that strips client-supplied identity headers."
+                        ),
+                        cvss_estimate=6.5,
+                    ))
     except aiohttp.ClientError:
         pass
 

@@ -1,0 +1,20 @@
+name: llama.cpp server
+description: "llama.cpp HTTP server (llama-server)"
+reference: "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"
+confidence_base: 0
+
+ports:
+  - port: 8080
+    weight: 5
+
+endpoints:
+  - path: "/props"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: '"default_generation_settings"'
+        weight: 50
+      - pattern: '"chat_template_caps"'
+        weight: 30
+
+threshold: 45

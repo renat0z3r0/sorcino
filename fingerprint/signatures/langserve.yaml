@@ -1,0 +1,20 @@
+name: LangServe
+description: "LangServe (langchain-ai/langserve) REST deployment"
+reference: "https://github.com/langchain-ai/langserve"
+confidence_base: 0
+
+ports:
+  - port: 8000
+    weight: 5
+
+endpoints:
+  - path: "/openapi.json"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: "StreamLogRequest"
+        weight: 40
+      - pattern: "StreamEventsRequest"
+        weight: 30
+
+threshold: 45
