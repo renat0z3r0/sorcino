@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+# Make the project root importable so `import cli`, `checks.*`, etc. resolve
+# without installing the package.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,18 @@
+name: Jan
+description: "Jan (jan.ai) local API server"
+reference: "https://www.jan.ai/docs/desktop/api-server"
+confidence_base: 0
+
+ports:
+  - port: 1337
+    weight: 15
+
+endpoints:
+  - path: "/openapi.json"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: '"title"\s*:\s*"Jan API Server Endpoints"'
+        weight: 50
+
+threshold: 45

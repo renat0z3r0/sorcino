@@ -1,0 +1,22 @@
+name: Open WebUI
+description: "Open WebUI (Ollama / OpenAI front-end)"
+reference: "https://docs.openwebui.com/"
+confidence_base: 0
+
+# /api/config is already in DEFAULT_PATHS and is frequently exposed
+# unauthenticated (open-webui issue #9211 leaks OAuth client IDs / keys).
+ports:
+  - port: 8080
+    weight: 5
+  - port: 3000
+    weight: 5
+
+endpoints:
+  - path: "/api/config"
+    method: "GET"
+    weight: 10
+    response_patterns:
+      - pattern: '"name"\s*:\s*"Open WebUI"'
+        weight: 45
+
+threshold: 40

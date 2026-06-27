@@ -20,6 +20,30 @@ class SignatureMatcher:
         if signatures_dir is None:
             signatures_dir = str(Path(__file__).parent / "signatures")
         self.signatures = self._load_signatures(signatures_dir)
+        self._path_rules = self._collect_path_rules()
+
+    def _collect_path_rules(self) -> list[tuple[frozenset[int] | None, list[str]]]:
+        """(ports, GET-paths) per signature. A signature's extra paths are only
+        probed on the port(s) it declares (or on every port if it declares
+        none), so adding many signatures doesn't bloat per-port probing."""
+        rules: list[tuple[frozenset[int] | None, list[str]]] = []
+        for sig in self.signatures:
+            ports = frozenset(p["port"] for p in sig.get("ports", [])) or None
+            paths = [
+                ep["path"] for ep in sig.get("endpoints", [])
+                if str(ep.get("method", "GET")).upper() == "GET" and ep.get("path")
+            ]
+            if paths:
+                rules.append((ports, paths))
+        return rules
+
+    def extra_paths_for_port(self, port: int) -> list[str]:
+        """Signature-declared GET paths relevant to `port` (beyond DEFAULT_PATHS)."""
+        out: list[str] = []
+        for ports, paths in self._path_rules:
+            if ports is None or port in ports:
+                out.extend(paths)
+        return list(dict.fromkeys(out))
 
     def _load_signatures(self, dir_path: str) -> list[dict]:
         signatures = []
@@ -69,6 +93,19 @@ class SignatureMatcher:
                 if url_path == endpoint["path"]:
                     confidence += endpoint.get("weight", 0)
                     matched_signals.append(f"endpoint:{endpoint['path']}")
+
+                    # Per-endpoint header checks (previously declared in the
+                    # signatures but silently ignored by the matcher).
+                    for hc in endpoint.get("headers_check", []):
+                        want_name = hc["header"].lower()
+                        want_val = str(hc.get("value", "")).lower()
+                        for h_name, h_val in headers.items():
+                            if h_name.lower() == want_name and (
+                                not want_val or want_val in str(h_val).lower()
+                            ):
+                                confidence += hc.get("weight", 0)
+                                matched_signals.append(f"header_check:{want_name}")
+                                break
 
                     for resp_pattern in endpoint.get("response_patterns", []):
                         flags = re.IGNORECASE if resp_pattern.get("case_insensitive") else 0

@@ -1,6 +1,5 @@
 from __future__ import annotations
 import aiohttp
-from typing import Optional
 
 
 async def fetch_shodan_targets(
@@ -53,18 +52,3 @@ async def fetch_shodan_targets(
                 break
 
     return targets
-
-
-async def shodan_host_info(api_key: str, ip: str) -> Optional[dict]:
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(
-                f"https://api.shodan.io/shodan/host/{ip}",
-                params={"key": api_key},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-        except Exception:
-            pass
-    return None

@@ -1,0 +1,20 @@
+name: text-generation-webui
+description: "oobabooga text-generation-webui API"
+reference: "https://github.com/oobabooga/text-generation-webui"
+confidence_base: 0
+
+ports:
+  - port: 5000
+    weight: 15
+
+endpoints:
+  - path: "/v1/internal/model/info"
+    method: "GET"
+    weight: 15
+    response_patterns:
+      - pattern: '"lora_names"'
+        weight: 35
+      - pattern: '"loader"'
+        weight: 20
+
+threshold: 45

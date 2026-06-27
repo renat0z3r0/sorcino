@@ -1,0 +1,26 @@
+name: Triton Inference Server
+description: "NVIDIA Triton Inference Server"
+reference: "https://github.com/triton-inference-server/server"
+confidence_base: 0
+
+ports:
+  - port: 8000
+    weight: 5
+  - port: 8002
+    weight: 10
+
+endpoints:
+  - path: "/v2"
+    method: "GET"
+    weight: 15
+    response_patterns:
+      - pattern: '"name"\s*:\s*"triton"'
+        weight: 45
+  - path: "/metrics"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: "nv_inference_request_success"
+        weight: 45
+
+threshold: 45

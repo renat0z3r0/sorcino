@@ -61,31 +61,53 @@ endpoints:
       - pattern: "sessions"
         weight: 10
 
+  # Real authenticated surface on current OpenClaw releases.
+  - path: "/v1/models"
+    method: "GET"
+    weight: 20
+    response_patterns:
+      - pattern: '"object":\s*"list"'
+        weight: 15
+      - pattern: '"data"'
+        weight: 10
+  - path: "/tools/invoke"
+    method: "GET"
+    weight: 25
+    response_patterns:
+      - pattern: "operator\\."
+        weight: 30
+  - path: "/api/v1/admin/rpc"
+    method: "GET"
+    weight: 25
+    response_patterns:
+      - pattern: '"jsonrpc"'
+        weight: 15
+
+  # Legacy/unconfirmed path kept at low weight (not in current docs).
   - path: "/api/config"
     method: "GET"
-    weight: 15
+    weight: 5
     response_patterns:
       - pattern: '"gateway"'
-        weight: 20
+        weight: 10
       - pattern: '"channels"'
-        weight: 20
+        weight: 15
       - pattern: '"whatsapp"'
-        weight: 25
+        weight: 20
       - pattern: '"telegram"'
-        weight: 25
-      - pattern: '"allowInsecureAuth"'
-        weight: 40
+        weight: 20
 
 ports:
   - port: 18789
     weight: 35
     description: "Gateway WebSocket + HTTP"
+  # Unconfirmed against current docs; canvas port is dynamic (mDNS canvasPort).
   - port: 18791
-    weight: 25
-    description: "CDP browser control"
+    weight: 10
+    description: "CDP browser control (unconfirmed)"
   - port: 18793
-    weight: 25
-    description: "Canvas file server"
+    weight: 10
+    description: "Canvas file server (unconfirmed)"
 
 mdns:
   service_type: "_openclaw-gw._tcp"

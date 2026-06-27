@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import re
-from datetime import datetime
+import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
@@ -19,8 +20,8 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 
-from discovery.port_scanner import scan_host, DEFAULT_PORTS
-from discovery.service_probe import probe_http
+from discovery.port_scanner import scan_host, DEFAULT_PORTS, LLM_EXTRA_PORTS
+from discovery.service_probe import probe_http, DEFAULT_PATHS
 from discovery.rdns import reverse_dns_bulk
 from fingerprint.matcher import SignatureMatcher
 from checks.models import Severity, VulnFinding, SEVERITY_ORDER
@@ -28,6 +29,7 @@ from checks.auth_bypass import check_auth_bypass
 from checks.info_disclosure import check_info_disclosure
 from checks.api_key_exposure import check_api_key_exposure
 from checks.websocket_check import check_websocket_auth
+from checks.hermes import check_hermes
 from checks.mdns_discovery import check_mdns_discovery
 from checks.evidence import EvidenceCollector
 from output.json_report import generate_json_report
@@ -49,7 +51,7 @@ _SEVERITY_NAMES = {s.value: s for s in Severity}
 
 
 def _auto_output_name(fmt: str) -> str:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     ext = FORMAT_EXTENSIONS.get(fmt, ".json")
     return f"sorcino_scan_{ts}{ext}"
 
@@ -76,6 +78,10 @@ console = Console()
 
 def parse_targets(target: str) -> list[str]:
     targets: list[str] = []
+
+    target = target.strip()
+    if not target:
+        return targets
 
     if target.startswith("@") or (not target[0].isdigit() and Path(target).exists()):
         file_path = target[1:] if target.startswith("@") else target
@@ -113,12 +119,34 @@ def parse_targets(target: str) -> list[str]:
         except ValueError:
             pass
 
+    # shodan-import writes "ip:port" lines (README two-step flow); strip the
+    # port so the IP actually scans instead of being passed verbatim to
+    # open_connection (which fails silently -> "0 open ports"). The port suffix
+    # is dropped, so the scan falls back to DEFAULT_PORTS (covers the common LLM
+    # ports); thread per-target ports only if Shodan ports stray outside that set.
+    ip_port = re.match(r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d+$", target)
+    if ip_port:
+        targets.append(ip_port.group(1))
+        return targets
+
     targets.append(target)
     return targets
 
 
 def parse_ports(ports_str: str) -> list[int]:
-    return [int(p.strip()) for p in ports_str.split(",") if p.strip().isdigit()]
+    ports: list[int] = []
+    invalid: list[str] = []
+    for tok in ports_str.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.isdigit() and 1 <= int(tok) <= 65535:
+            ports.append(int(tok))
+        else:
+            invalid.append(tok)
+    if invalid:
+        raise typer.BadParameter(f"Invalid port(s): {', '.join(invalid)} (must be 1-65535)")
+    return ports
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +156,6 @@ def parse_ports(ports_str: str) -> list[int]:
 async def run_scan(
     targets: list[str],
     ports: list[int] | None,
-    mode: str,
     output: str,
     fmt: str,
     timeout: float,
@@ -174,15 +201,26 @@ async def run_scan(
                 port_list = ", ".join(str(p.port) for p in open_ports)
                 console.print(f"  [dim]{ip} - open: {port_list}[/dim]")
 
-            connector = aiohttp.TCPConnector(ssl=False)
+            # Each host gets its own session, so the GLOBAL socket ceiling is
+            # (worker pool = concurrency) x this limit. Scale it down with
+            # concurrency to stay well under the OS fd limit (macOS default 256).
+            conn_limit = max(4, 150 // max(1, concurrency))
+            connector = aiohttp.TCPConnector(ssl=False, limit=conn_limit)
             client_timeout = aiohttp.ClientTimeout(total=timeout)
 
             async with aiohttp.ClientSession(
                 timeout=client_timeout, connector=connector
             ) as session:
-                for port_result in open_ports:
+
+                async def scan_one_port(port_result) -> tuple[list[dict], list[VulnFinding]]:
                     port = port_result.port
-                    probe_results = await probe_http(ip, port, timeout=timeout)
+                    psvc: list[dict] = []
+                    pfind: list[VulnFinding] = []
+                    # DEFAULT_PATHS plus the signature paths relevant to this
+                    # port (so new signatures fire without probing every path
+                    # on every port).
+                    paths = list(dict.fromkeys(DEFAULT_PATHS + matcher.extra_paths_for_port(port)))
+                    probe_results = await probe_http(ip, port, paths=paths, timeout=timeout, session=session)
 
                     if verbose:
                         for probe in probe_results:
@@ -194,73 +232,98 @@ async def run_scan(
                             )
 
                     for probe in probe_results:
-                        url_path = probe.url.split(f":{port}")[-1] if f":{port}" in probe.url else "/"
-                        matches = matcher.match(
-                            port=port,
-                            headers=probe.headers,
-                            body=probe.body_preview,
-                            url_path=url_path,
-                        )
-                        for m in matches:
-                            services.append({
-                                "host": ip,
-                                "port": port,
-                                "name": m.service_name,
-                                "confidence": m.confidence,
-                                "signals": list(m.matched_signals),
+                        url_path = urllib.parse.urlsplit(probe.url).path or "/"
+                        for m in matcher.match(port=port, headers=probe.headers,
+                                               body=probe.body_preview, url_path=url_path):
+                            psvc.append({
+                                "host": ip, "port": port, "name": m.service_name,
+                                "confidence": m.confidence, "signals": list(m.matched_signals),
                             })
 
-                    base_url = f"http://{ip}:{port}"
+                    # Check over the scheme that actually answered, so TLS-fronted
+                    # proxies get auth/key/info-checked, not just fingerprinted.
+                    scheme = urllib.parse.urlsplit(probe_results[0].url).scheme if probe_results else "http"
+                    base_url = f"{scheme or 'http'}://{ip}:{port}"
 
-                    try:
-                        auth_findings = await check_auth_bypass(base_url, session, evidence=ev)
-                        findings.extend(auth_findings)
-                    except Exception:
-                        pass
+                    # The three checks are independent -> run them concurrently.
+                    results = await asyncio.gather(
+                        check_auth_bypass(base_url, session, evidence=ev),
+                        check_info_disclosure(base_url, session, probe_results, evidence=ev),
+                        check_api_key_exposure(base_url, session),
+                        return_exceptions=True,
+                    )
+                    for name, r in zip(("auth_bypass", "info_disclosure", "api_key_exposure"), results):
+                        if isinstance(r, list):
+                            pfind.extend(r)
+                        elif verbose:
+                            console.print(f"  [yellow]{name} failed on {base_url}: {r!r}[/yellow]")
 
-                    try:
-                        info_findings = await check_info_disclosure(base_url, session, probe_results, evidence=ev)
-                        findings.extend(info_findings)
-                    except Exception:
-                        pass
+                    pfind.extend(check_hermes(probe_results))
+                    return psvc, pfind
 
-                    try:
-                        key_findings = await check_api_key_exposure(base_url, session)
-                        findings.extend(key_findings)
-                    except Exception:
-                        pass
+                # Ports are independent -> scan them concurrently.
+                port_outputs = await asyncio.gather(
+                    *[scan_one_port(pr) for pr in open_ports], return_exceptions=True
+                )
+                for out in port_outputs:
+                    if isinstance(out, tuple):
+                        psvc, pfind = out
+                        services.extend(psvc)
+                        findings.extend(pfind)
+                    elif verbose and isinstance(out, Exception):
+                        console.print(f"  [yellow]port scan failed on {ip}: {out!r}[/yellow]")
 
                 try:
                     open_port_numbers = [p.port for p in open_ports]
                     ws_findings = await check_websocket_auth(f"http://{ip}", ports=open_port_numbers, evidence=ev)
                     findings.extend(ws_findings)
-                except Exception:
-                    pass
+                except Exception as e:
+                    if verbose:
+                        console.print(f"  [yellow]websocket check failed on {ip}: {e!r}[/yellow]")
 
         if ev is not None:
             ev.write_manifest()
 
         return services, findings, host_ports
 
-    # --- progress ---
+    # --- run: worker pool instead of fixed-size batches, so a slow host no
+    # longer stalls a whole batch — a freed slot is reused immediately. ---
     delay_sec = delay_ms / 1000.0 if delay_ms > 0 else 0
 
+    def collect(result: tuple) -> None:
+        services, findings, host_ports = result
+        all_services.extend(services)
+        all_findings.extend(findings)
+        all_open_ports.extend(host_ports)
+
+    async def drain(advance=None) -> None:
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        for t in targets:
+            queue.put_nowait(t)
+
+        async def worker() -> None:
+            while True:
+                try:
+                    ip = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    collect(await scan_single_target(ip))
+                except Exception as e:
+                    if verbose:
+                        console.print(f"[yellow]host {ip} failed: {e!r}[/yellow]")
+                if advance:
+                    advance()
+                if delay_sec:
+                    await asyncio.sleep(delay_sec)  # stealth pacing, per worker
+
+        # The worker count is the concurrency gate; scan_single_target's own
+        # semaphore is now redundant but harmless, so left in place.
+        n = min(concurrency, len(targets)) or 1
+        await asyncio.gather(*[worker() for _ in range(n)])
+
     if quiet:
-        # No progress bar in quiet mode, just run
-        batch_size = concurrency
-        for i in range(0, len(targets), batch_size):
-            batch = targets[i:i + batch_size]
-            tasks = [scan_single_target(ip) for ip in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
-                    continue
-                services, findings, host_ports = result
-                all_services.extend(services)
-                all_findings.extend(findings)
-                all_open_ports.extend(host_ports)
-            if delay_sec > 0 and i + batch_size < len(targets):
-                await asyncio.sleep(delay_sec)
+        await drain()
     else:
         with Progress(
             SpinnerColumn(),
@@ -270,24 +333,7 @@ async def run_scan(
             console=console,
         ) as progress:
             task = progress.add_task("Scanning targets...", total=len(targets))
-
-            batch_size = concurrency
-            for i in range(0, len(targets), batch_size):
-                batch = targets[i:i + batch_size]
-                tasks = [scan_single_target(ip) for ip in batch]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for result in results:
-                    if isinstance(result, Exception):
-                        continue
-                    services, findings, host_ports = result
-                    all_services.extend(services)
-                    all_findings.extend(findings)
-                    all_open_ports.extend(host_ports)
-
-                progress.update(task, advance=len(batch))
-                if delay_sec > 0 and i + batch_size < len(targets):
-                    await asyncio.sleep(delay_sec)
+            await drain(advance=lambda: progress.update(task, advance=1))
 
     if run_mdns:
         if not quiet:
@@ -442,6 +488,7 @@ def _print_results(
 def scan(
     target: str = typer.Argument(..., help="Target: IP, CIDR, range, domain, or @file"),
     ports: str = typer.Option(None, "--ports", "-p", help="Custom ports (comma-separated)"),
+    llm_ports: bool = typer.Option(False, "--llm-ports", help="Also scan less-common LLM-server ports (LM Studio, Jan, Xinference, ...)"),
     mode: str = typer.Option("thorough", "--mode", "-m", help="Scan mode: fast, thorough, stealth"),
     output: str = typer.Option(None, "--output", "-o", help="Output file (auto-generated if omitted)"),
     fmt: str = typer.Option("json", "--format", "-f", help="Output format: json, markdown, txt"),
@@ -484,7 +531,11 @@ def scan(
         if not typer.confirm(f"This will scan {len(targets)} IPs. Continue?"):
             raise typer.Exit(0)
 
-    port_list = parse_ports(ports) if ports else None
+    port_list = (parse_ports(ports) or None) if ports else None
+
+    if llm_ports:
+        base = port_list if port_list else list(DEFAULT_PORTS)
+        port_list = list(dict.fromkeys(base + LLM_EXTRA_PORTS))
 
     # Determine rdns default based on mode if not explicitly set
     if rdns is None:
@@ -493,7 +544,6 @@ def scan(
     asyncio.run(run_scan(
         targets=targets,
         ports=port_list,
-        mode=mode,
         output=output,
         fmt=fmt,
         timeout=eff_timeout,
@@ -573,8 +623,7 @@ def asn(
 
     asyncio.run(run_scan(
         targets=targets,
-        ports=parse_ports(ports) if ports else None,
-        mode=mode,
+        ports=(parse_ports(ports) or None) if ports else None,
         output=output,
         fmt=fmt,
         timeout=eff_timeout,
@@ -631,11 +680,13 @@ def shodan_import(
     console.print(table)
 
     if scan_now:
+        scan_ips = [t["ip"] for t in targets]
+        if len(scan_ips) > 1000 and not typer.confirm(f"This will scan {len(scan_ips)} IPs. Continue?"):
+            raise typer.Exit(0)
         console.print("\n[bold]Starting scan...[/bold]")
         asyncio.run(run_scan(
-            targets=[t["ip"] for t in targets],
+            targets=scan_ips,
             ports=list({t["port"] for t in targets}),
-            mode="thorough",
             output="shodan_scan_report.json",
             fmt="json",
             timeout=10.0,

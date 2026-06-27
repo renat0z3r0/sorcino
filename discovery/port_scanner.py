@@ -10,9 +10,16 @@ DEFAULT_PORTS = [
     18793,
     11434,
     4000,
+    8642, 9119,   # Hermes Agent: API server + dashboard
     8080, 8000, 3000,
     80, 443,
 ]
+
+# Less-common LLM-server ports, scanned only with --llm-ports (keeps the
+# default scan fast). Verified service defaults: LM Studio 1234, Jan 1337,
+# AnythingLLM 3001, GPT4All 4891, oobabooga 5000, Triton metrics 8002,
+# TGI alt 9000, Xinference 9997.
+LLM_EXTRA_PORTS = [1234, 1337, 3001, 4891, 5000, 8002, 9000, 9997]
 
 
 @dataclass(frozen=True)
@@ -25,29 +32,26 @@ class PortResult:
 
 
 async def scan_port(ip: str, port: int, timeout: float = 3.0) -> PortResult:
-    start = asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
     try:
-        reader, writer = await asyncio.wait_for(
+        _reader, writer = await asyncio.wait_for(
             asyncio.open_connection(ip, port),
             timeout=timeout,
         )
-        latency = (asyncio.get_event_loop().time() - start) * 1000
-
-        banner = None
-        try:
-            writer.write(b"\r\n")
-            await writer.drain()
-            data = await asyncio.wait_for(reader.read(1024), timeout=1.0)
-            banner = data.decode("utf-8", errors="ignore").strip()[:200]
-        except Exception:
-            pass
-
-        writer.close()
-        await writer.wait_closed()
-
-        return PortResult(ip=ip, port=port, open=True, banner=banner, latency_ms=latency)
     except Exception:
         return PortResult(ip=ip, port=port, open=False)
+
+    latency = (loop.time() - start) * 1000
+    # No banner grab: every DEFAULT_PORTS service is HTTP and is fully
+    # fingerprinted by probe_http; the write + up-to-1s read was pure idle cost.
+    try:
+        writer.close()
+        await writer.wait_closed()
+    except Exception:
+        pass  # a RST during teardown must not demote a confirmed-open port
+
+    return PortResult(ip=ip, port=port, open=True, latency_ms=latency)
 
 
 async def scan_host(

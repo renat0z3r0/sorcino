@@ -5,15 +5,8 @@ import re
 import aiohttp
 
 from checks.models import Severity, VulnFinding
-
-
-API_KEY_PATTERNS = {
-    "anthropic": r"sk-ant-[a-zA-Z0-9-]{80,}",
-    "openai": r"sk-[a-zA-Z0-9]{48}",
-    "openai_project": r"sk-proj-[a-zA-Z0-9]{48}",
-    "google": r"AIza[a-zA-Z0-9_-]{35}",
-    "huggingface": r"hf_[a-zA-Z0-9]{34}",
-}
+from checks.secret_patterns import API_KEY_PATTERNS
+from utils.http import read_capped
 
 ENDPOINTS_TO_CHECK = [
     "/", "/health", "/status", "/api/config", "/config",
@@ -34,7 +27,7 @@ async def check_api_key_exposure(
                 if resp.status != 200:
                     continue
 
-                body = await resp.text()
+                body = await read_capped(resp)
                 headers = dict(resp.headers)
 
                 for provider, pattern in API_KEY_PATTERNS.items():

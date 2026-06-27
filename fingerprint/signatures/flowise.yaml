@@ -1,0 +1,21 @@
+name: Flowise
+description: "FlowiseAI low-code LLM agent builder"
+reference: "https://github.com/FlowiseAI/Flowise"
+confidence_base: 0
+
+# Frequently exposed unauthenticated (GHSA-wgpv-6j63-x5ph).
+ports:
+  - port: 3000
+    weight: 5
+
+endpoints:
+  - path: "/"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: "Flowise - Build AI Agents, Visually"
+        weight: 50
+      - pattern: 'content="FlowiseAI"'
+        weight: 30
+
+threshold: 45

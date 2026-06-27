@@ -25,6 +25,7 @@ venv/
 ENV/
 env/
 .venv/
+.venv-test/
 
 # IDE
 .idea/
@@ -53,3 +54,7 @@ shodan_targets.txt
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Claude Code / agent harness state (never upload)
+.claude/
+*.lock

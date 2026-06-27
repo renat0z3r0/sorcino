@@ -1,0 +1,40 @@
+name: Hermes Agent
+description: "NousResearch Hermes Agent (self-improving AI agent)"
+reference: "https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server"
+confidence_base: 0
+
+# Verified against the official docs (2026-06):
+#  - API server on 8642: GET /v1/capabilities -> {"object":"hermes.api_server.capabilities"}
+#  - Dashboard on 9119: unauthenticated by default on localhost; bound to 0.0.0.0
+#    with --insecure it exposes the .env (API keys) — a documented misconfig.
+headers:
+  - name: "x-hermes-session-key"
+    weight: 50
+
+ports:
+  - port: 8642
+    weight: 25
+    description: "OpenAI-compatible API server"
+  - port: 9119
+    weight: 15
+    description: "Web dashboard"
+
+endpoints:
+  - path: "/v1/capabilities"
+    method: "GET"
+    weight: 25
+    response_patterns:
+      - pattern: "hermes\\.api_server\\.capabilities"
+        weight: 50
+  - path: "/"
+    method: "GET"
+    weight: 5
+    response_patterns:
+      - pattern: "Web Dashboard \\| Hermes Agent"
+        weight: 50
+
+body_patterns:
+  - pattern: "hermes\\.api_server"
+    weight: 40
+
+threshold: 50

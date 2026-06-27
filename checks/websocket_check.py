@@ -1,84 +1,83 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
-import websockets
-
 from checks.models import Severity, VulnFinding
+from checks.openclaw_profile import OpenClawProfile, load_profile
+from checks.ws_probe import WSResult, probe_ws
 
 if TYPE_CHECKING:
     from checks.evidence import EvidenceCollector
-
-
-TEST_MESSAGES = [
-    '{"jsonrpc":"2.0","method":"ping","id":1}',
-    '{"type":"ping"}',
-    '{"action":"list_methods"}',
-]
 
 
 async def check_websocket_auth(
     base_url: str,
     ports: list[int] | None = None,
     evidence: EvidenceCollector | None = None,
+    profile: OpenClawProfile | None = None,
 ) -> list[VulnFinding]:
+    """Probe candidate ports for unauthenticated WebSocket gateways.
+
+    Shares the close-code classification with ``auth_bypass`` via ``probe_ws``
+    so a fail-closed (1008) gateway is no longer mistaken for a bypass.
+    """
+    profile = profile or load_profile()
     findings: list[VulnFinding] = []
 
     if ports is None:
-        ports = [18789, 8080, 3000, 8000]
+        ports = list(profile.verified_ports) or [18789]
 
     host = base_url.replace("http://", "").replace("https://", "").split(":")[0]
-    seen: set[str] = set()
+    seen: set[int] = set()
 
     for port in ports:
-        key = f"{host}:{port}"
-        if key in seen:
+        if port in seen:
             continue
+        seen.add(port)
 
-        ws_url = f"ws://{host}:{port}/"
+        result, obs = await probe_ws(host, port, "/", profile=profile, evidence=evidence)
 
-        try:
-            async with websockets.connect(
-                ws_url, close_timeout=5, open_timeout=5
-            ) as ws:
-                got_response = False
-                for msg in TEST_MESSAGES:
-                    try:
-                        await ws.send(msg)
-                        response = await asyncio.wait_for(ws.recv(), timeout=3)
-
-                        if evidence is not None:
-                            evidence.save_ws_response(ws_url, msg, response)
-
-                        findings.append(VulnFinding(
-                            check_name="websocket_auth",
-                            severity=Severity.HIGH,
-                            title="WebSocket accepts unauthenticated connections",
-                            description=f"WebSocket at {ws_url} accepts connections without authentication and responds to messages.",
-                            evidence=f"Sent: {msg[:50]}, Received: {response[:100]}",
-                            remediation="Implement WebSocket authentication (token in handshake, first message auth).",
-                        ))
-                        got_response = True
-                        break
-                    except asyncio.TimeoutError:
-                        continue
-
-                if not got_response:
-                    findings.append(VulnFinding(
-                        check_name="websocket_auth",
-                        severity=Severity.MEDIUM,
-                        title="WebSocket accepts unauthenticated connections",
-                        description=f"WebSocket at {ws_url} accepts connections without authentication.",
-                        evidence="Connection established without credentials",
-                        remediation="Implement WebSocket authentication.",
-                    ))
-
-                seen.add(key)
-
-        except websockets.exceptions.InvalidStatusCode:
-            pass
-        except Exception:
-            continue
+        if result is WSResult.UNAUTH_RPC:
+            findings.append(VulnFinding(
+                check_name="websocket_auth",
+                severity=Severity.CRITICAL,
+                title="WebSocket accepts unauthenticated control",
+                description=(
+                    f"WebSocket at {obs.scheme}://{host}:{port}/ answered an RPC request "
+                    "without authentication."
+                ),
+                evidence=f"Received: {(obs.response or '')[:120]}",
+                remediation="Implement WebSocket authentication (token in handshake / first message).",
+                cvss_estimate=9.6,
+            ))
+        elif result is WSResult.ACCEPTED_NO_RESPONSE:
+            findings.append(VulnFinding(
+                check_name="websocket_auth",
+                severity=Severity.MEDIUM,
+                title="WebSocket connection accepted, auth state unclear",
+                description=(
+                    f"WebSocket at {obs.scheme}://{host}:{port}/ accepted the connection "
+                    "but did not respond. Auth enforcement could not be confirmed."
+                ),
+                evidence="Connection established without credentials",
+                remediation="Implement WebSocket authentication and verify it is enforced.",
+                cvss_estimate=5.3,
+            ))
+        elif result is WSResult.FAIL_CLOSED:
+            # Auth is being enforced (good); only notable because the gateway is
+            # reachable over the network at all (default bind is loopback).
+            findings.append(VulnFinding(
+                check_name="websocket_auth",
+                severity=Severity.LOW,
+                title="WebSocket exposed to network (authentication enforced)",
+                description=(
+                    f"WebSocket at {obs.scheme}://{host}:{port}/ is reachable but rejects "
+                    "unauthenticated connections (fail-closed)."
+                ),
+                evidence=f"close_code={obs.close_code} reason={obs.close_reason!r}",
+                remediation="Bind to loopback / front remote access with a tunnel if exposure is unintended.",
+                cvss_estimate=3.1,
+            ))
+        # UNREACHABLE => no finding.
 
     return findings

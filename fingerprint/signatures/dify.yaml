@@ -1,0 +1,22 @@
+name: Dify
+description: "Dify open-source LLM app platform"
+reference: "https://github.com/langgenius/dify"
+confidence_base: 0
+
+ports:
+  - port: 80
+    weight: 5
+  - port: 443
+    weight: 5
+
+endpoints:
+  - path: "/console/api/setup"
+    method: "GET"
+    weight: 15
+    response_patterns:
+      - pattern: '"setup_at"'
+        weight: 35
+      - pattern: '"step"\s*:\s*"(not_started|finished)"'
+        weight: 30
+
+threshold: 45

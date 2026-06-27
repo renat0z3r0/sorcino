@@ -1,0 +1,167 @@
+# OpenClaw attack-surface profile — single source of truth for the checks.
+#
+# This file centralises everything Sorcino "knows" about OpenClaw so that
+# aligning to a new OpenClaw release means editing YAML, not Python.
+#
+# Sources (verified 2026-06):
+#   https://docs.openclaw.ai/gateway/security
+#   https://docs.openclaw.ai/gateway/bonjour
+#   https://docs.openclaw.ai/gateway/remote
+#
+# Bump `openclaw_version` when the surface is re-validated against a release.
+schema_version: 1
+openclaw_version: "verified-2026-06"
+
+auth:
+  # Gateway auth is required by default and is fail-closed: with no valid auth
+  # path configured the gateway REFUSES WebSocket connections.
+  modes: [token, password, trusted-proxy]
+  config_keys:
+    mode: "gateway.auth.mode"
+    token: "gateway.auth.token"
+    password: "gateway.auth.password"
+    bind: "gateway.bind"            # loopback | lan | tailnet  (default: loopback)
+    remote_transport: "gateway.remote.transport"  # e.g. "direct"
+  trusted_proxy:
+    # NOTE: the exact identity header name(s) are NOT documented publicly.
+    # Leave empty -> the header-spoofing check is a no-op. Populate only with
+    # a name confirmed on a real deployment, otherwise it is speculation.
+    identity_headers: []
+
+ws:
+  # Map of close codes the gateway uses, with the meaning we attach to them.
+  close_codes:
+    1008: fail_closed              # policy violation => auth enforced (NOT a vuln)
+  # Substrings in the close reason that confirm auth is being enforced.
+  fail_closed_reasons:
+    - "gateway token"
+    - "unauthorized"
+  # RPC probe sent on the gateway WebSocket.
+  rpc_probe: '{"jsonrpc":"2.0","method":"status","id":1}'
+
+# Privileged operator scopes. Seeing any of these in an UNauthenticated
+# response is a strong signal of privileged access without a token.
+operator_scopes:
+  - "operator.admin"
+  - "operator.approvals"
+  - "operator.pairing"
+  - "operator.read"
+  - "operator.talk.secrets"
+  - "operator.write"
+
+# HTTP endpoints worth probing without credentials.
+# severity = severity to assign when reached unauthenticated WITH sensitive content.
+http_endpoints:
+  - path: "/v1/models"
+    method: GET
+    name: "OpenAI-compatible model list"
+    requires_auth: true
+    severity: high
+  - path: "/v1/chat/completions"
+    method: GET
+    name: "OpenAI-compatible chat endpoint"
+    requires_auth: true
+    severity: high
+  - path: "/v1/responses"
+    method: GET
+    name: "OpenAI-compatible responses endpoint"
+    requires_auth: true
+    severity: high
+  - path: "/tools/invoke"
+    method: GET
+    name: "Tool invocation endpoint"
+    requires_auth: true
+    severity: critical
+  - path: "/api/v1/admin/rpc"
+    method: GET
+    name: "Plugin admin RPC"
+    requires_auth: true
+    severity: critical
+  - path: "/api/channels"
+    method: GET
+    name: "Channels API"
+    requires_auth: true
+    severity: high
+  - path: "/webchat"
+    method: GET
+    name: "WebChat UI"
+    requires_auth: false
+    severity: high
+  - path: "/dashboard"
+    method: GET
+    name: "Control Dashboard"
+    requires_auth: true
+    severity: high
+  - path: "/health"
+    method: GET
+    name: "Health endpoint"
+    requires_auth: false
+    severity: low
+
+# Body substrings that indicate a real (sensitive) API response rather than a
+# static SPA shell. Used to lift severity from the MEDIUM baseline.
+sensitive_indicators:
+  - '"channels"'
+  - '"whatsapp"'
+  - '"telegram"'
+  - '"token"'
+  - '"apiKey"'
+  - "ANTHROPIC_API_KEY"
+  - '"sessions"'
+  - '"credentials"'
+
+mdns:
+  service_type: "_openclaw-gw._tcp.local."
+  remediation_key: "discovery.mdns.mode"  # full | minimal | off  (default: minimal)
+  modes: [full, minimal, off]
+  default_mode: minimal
+  disable_env: "OPENCLAW_DISABLE_BONJOUR"
+  # TXT record keys advertised by the gateway, with leak severity + a note.
+  # `full` mode is the only one that publishes cliPath/sshPort.
+  txt_keys:
+    cliPath:
+      severity: medium
+      note: "exposes absolute CLI path -> reveals username (full mode only)"
+    sshPort:
+      severity: low
+      note: "advertises SSH availability (full mode only)"
+    tailnetDns:
+      severity: low
+      note: "exposes Tailscale MagicDNS hostname"
+    gatewayTls:
+      severity: info
+      note: "1 => gateway WebSocket is TLS (wss://) — drives scheme selection"
+    gatewayTlsSha256:
+      severity: info
+      note: "cert fingerprint advertised over mDNS"
+    canvasPort:
+      severity: info
+      note: "canvas/file-server port (dynamic — discovered here, not fixed)"
+    gatewayPort:
+      severity: info
+      note: "gateway WebSocket port"
+    lanHost:
+      severity: info
+      note: "advertised LAN hostname"
+    role:
+      severity: info
+      note: "service role (gateway)"
+    transport:
+      severity: info
+      note: "transport type"
+    displayName:
+      severity: info
+      note: "friendly instance name"
+
+ports:
+  - port: 18789
+    verified: true
+    description: "Gateway WebSocket + HTTP"
+  # The following are NOT confirmed by current docs and the canvas port is
+  # actually dynamic (advertised via the mDNS `canvasPort` TXT record).
+  - port: 18791
+    verified: false
+    description: "CDP browser control (unconfirmed)"
+  - port: 18793
+    verified: false
+    description: "Canvas file server (unconfirmed; prefer mDNS canvasPort)"

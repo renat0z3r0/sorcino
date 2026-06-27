@@ -18,8 +18,10 @@ setup(
         "typer>=0.9.0",
         "rich>=13.0.0",
         "zeroconf>=0.131.0",
-        "shodan>=1.31.0",
     ],
+    extras_require={
+        "dev": ["pytest>=8.0"],
+    },
     entry_points={
         "console_scripts": [
             "sorcino=cli:app",
@@ -27,6 +29,7 @@ setup(
     },
     package_data={
         "fingerprint": ["signatures/*.yaml"],
+        "": ["config/*.yaml"],
     },
     python_requires=">=3.9",
 )
