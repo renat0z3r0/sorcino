@@ -1,4 +1,4 @@
-from cli import _filter_findings
+from sorcino_cli import _filter_findings
 from checks.models import Severity, VulnFinding, SEVERITY_ORDER
 from checks.mdns_discovery import findings_from_records
 from checks.openclaw_profile import load_profile

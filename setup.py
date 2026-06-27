@@ -9,7 +9,7 @@ setup(
     author="Renato Zero",
     license="MIT",
     packages=find_packages(),
-    py_modules=["cli"],
+    py_modules=["sorcino_cli"],
     install_requires=[
         "aiohttp>=3.9.0",
         "aiodns>=3.0.0",
@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "sorcino=cli:app",
+            "sorcino=sorcino_cli:app",
         ],
     },
     package_data={

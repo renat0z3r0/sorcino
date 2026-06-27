@@ -1,4 +1,4 @@
-from cli import parse_targets, parse_ports
+from sorcino_cli import parse_targets, parse_ports
 
 
 def test_single_ip():

@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
-# Make the project root importable so `import cli`, `checks.*`, etc. resolve
+# Make the project root importable so `import sorcino_cli`, `checks.*`, etc. resolve
 # without installing the package.
 pythonpath = ["."]
 testpaths = ["tests"]

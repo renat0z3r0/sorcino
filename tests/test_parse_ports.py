@@ -1,7 +1,7 @@
 import pytest
 import typer
 
-from cli import parse_ports, parse_targets
+from sorcino_cli import parse_ports, parse_targets
 
 
 def test_valid_ports():
